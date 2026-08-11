@@ -1,26 +1,300 @@
 @import "tailwindcss";
 
+/*
+ * PaperAgents design tokens — newsprint editorial system.
+ * Adjust the palette and typefaces here; everything else references these.
+ */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Palette */
+  --paper: #f7f5f0; /* newsprint white */
+  --ink: #1a1a1a; /* ink black */
+  --accent-red: #b3261e; /* verdict stamp only */
+  --accent-green: #3d5c3d; /* verdict stamp only */
+  --muted-ink: #57534e; /* datelines, bylines, wire credits */
+  --hairline: rgba(26, 26, 26, 0.3); /* column rules & rules */
+  --surface: #ffffff; /* raised surfaces — the chat bubble */
+  --shadow-ink: rgba(26, 26, 26, 0.14); /* hard offset shadows */
+}
+
+/*
+ * Night edition — the same masthead, printed after dark. Warm near-black
+ * ground and off-white ink, not pure #000/#fff. Accents are brightened so
+ * verdict stamps stay legible on the dark ground.
+ */
+[data-theme="dark"] {
+  --paper: #16140f;
+  --ink: #edeae0;
+  --accent-red: #e5534b;
+  --accent-green: #6fa37a;
+  --muted-ink: #a8a092;
+  --hairline: rgba(237, 234, 224, 0.28);
+  --surface: #211d15;
+  --shadow-ink: rgba(0, 0, 0, 0.45);
+  color-scheme: dark; /* native inputs, scrollbars follow the night edition */
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-paper: var(--paper);
+  --color-ink: var(--ink);
+  --color-accent-red: var(--accent-red);
+  --color-accent-green: var(--accent-green);
+  --color-muted-ink: var(--muted-ink);
+  --color-hairline: var(--hairline);
+  --color-surface: var(--surface);
+  --color-background: var(--paper);
+  --color-foreground: var(--ink);
+
+  /* Typefaces */
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-fraunces), Georgia, "Times New Roman", serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, SFMono-Regular, Menlo,
+    monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  background-color: var(--paper); /* overscroll matches the edition */
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+}
+
+/* Theme switch should ease, not flash — unless the user opted out of motion. */
+@media (prefers-reduced-motion: no-preference) {
+  html,
+  body {
+    transition: background-color 0.2s ease, color 0.2s ease;
+  }
+}
+
+::selection {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+/* Visible keyboard focus everywhere — links, the CTA, anything focusable. */
+:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+}
+
+/*
+ * Verdict stamps — rubber-stamp treatment reserved for supported/unsupported.
+ * Double ring (border + outline gap) reads as stamped ink on newsprint.
+ */
+.stamp {
+  display: inline-block;
+  padding: 0.32rem 0.6rem;
+  border: 2px solid;
+  border-radius: 2px;
+  font-family: var(--font-plex-mono), ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.625rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.stamp--red {
+  color: var(--accent-red);
+  border-color: var(--accent-red);
+  outline: 1px solid var(--accent-red);
+  outline-offset: 3px;
+}
+
+.stamp--green {
+  color: var(--accent-green);
+  border-color: var(--accent-green);
+  outline: 1px solid var(--accent-green);
+  outline-offset: 3px;
+}
+
+/*
+ * Entrance animation for the hero. Gated behind prefers-reduced-motion:
+ * users who opt out of motion get a static page.
+ */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(14px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .rise {
+    animation: rise 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .rise-1 {
+    animation-delay: 0.1s;
+  }
+
+  .rise-2 {
+    animation-delay: 0.2s;
+  }
+
+  .rise-3 {
+    animation-delay: 0.3s;
+  }
+}
+
+/*
+ * Pipeline visualization — the four-node desk.
+ * Node glow while an agent is working; moving dashes while evidence flows
+ * from one agent to the next. All motion gated behind reduced-motion.
+ */
+.node--active {
+  border-color: var(--ink);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes node-pulse {
+    0%,
+    100% {
+      box-shadow: 0 0 0 0 color-mix(in srgb, var(--ink) 30%, transparent);
+    }
+    50% {
+      box-shadow: 0 0 0 10px transparent;
+    }
+  }
+
+  .node--active {
+    animation: node-pulse 1.5s ease-in-out infinite;
+  }
+
+  /* Dashes marching toward the next node = data in transit. */
+  @keyframes dash-move {
+    to {
+      background-position-x: 10px;
+    }
+  }
+
+  .connector-flow--moving {
+    animation: dash-move 0.6s linear infinite;
+  }
+
+  /* Blinking caret at the end of the live feed while a run is active. */
+  @keyframes blink {
+    50% {
+      opacity: 0;
+    }
+  }
+
+  .log-cursor {
+    animation: blink 1s step-end infinite;
+  }
+}
+
+/* Connector lines between agents. Dashed while waiting, marching while
+   flowing, solid once the downstream agent has received the handoff. */
+.connector-idle {
+  background-image: repeating-linear-gradient(
+    90deg,
+    var(--hairline) 0 5px,
+    transparent 5px 10px
+  );
+}
+
+.connector-flow {
+  background-image: repeating-linear-gradient(
+    90deg,
+    var(--ink) 0 5px,
+    transparent 5px 10px
+  );
+  transition: background-color 0.3s ease;
+}
+
+.connector-solid {
+  background-color: var(--ink);
+  background-image: none;
+}
+
+/*
+ * Mobile pipeline — below the sm breakpoint the four nodes stack vertically,
+ * so connectors rotate 90°: the dashes run top-to-bottom and the marching
+ * animation moves along the Y axis instead of X. The connector-v modifier is
+ * inert from sm up, where the horizontal styles above apply.
+ */
+@media (max-width: 639px) {
+  /* The Tailwind base classes (w-[2px] h-7 mx-auto my-1) size the connector;
+     this block only flips the dash direction for the vertical layout. */
+  .connector-v.connector-idle {
+    background-image: repeating-linear-gradient(
+      0deg,
+      var(--hairline) 0 5px,
+      transparent 5px 10px
+    );
+  }
+
+  .connector-v.connector-flow {
+    background-image: repeating-linear-gradient(
+      0deg,
+      var(--ink) 0 5px,
+      transparent 5px 10px
+    );
+  }
+
+  /* Motion on the vertical connectors must honor reduced-motion exactly like
+     the horizontal ones do on desktop. */
+  @media (prefers-reduced-motion: no-preference) {
+    @keyframes dash-move-v {
+      to {
+        background-position-y: 10px;
+      }
+    }
+
+    .connector-v.connector-flow--moving {
+      animation: dash-move-v 0.6s linear infinite;
+    }
+  }
+}
+
+/* Verdict stamp for UNCLEAR — same rubber-stamp treatment, muted ink. */
+.stamp--gray {
+  color: var(--muted-ink);
+  border-color: var(--muted-ink);
+  outline: 1px solid var(--muted-ink);
+  outline-offset: 3px;
+}
+
+/*
+ * Masthead furniture — the 32px theme toggle and the small dateline link
+ * keep their place in the bar, but their touch targets expand to 44px via
+ * an invisible ::before overlay, so they meet the minimum target size
+ * without ballooning the masthead.
+ */
+.hit-area {
+  position: relative;
+}
+
+.hit-area::before {
+  content: "";
+  position: absolute;
+  inset: -6px;
+  border-radius: 9999px;
+}
+
+/* Live feed scrollbar — thin, ink-tinted. */
+.feed-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--hairline) transparent;
+}
+
+.feed-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.feed-scroll::-webkit-scrollbar-thumb {
+  background: var(--hairline);
+}
+
+.feed-scroll::-webkit-scrollbar-track {
+  background: transparent;
 }
