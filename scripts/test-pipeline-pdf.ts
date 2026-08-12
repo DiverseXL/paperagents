@@ -3,11 +3,8 @@ import * as fs from "fs";
 import * as path from "path";
 
 // Load .env.local explicitly and override any inherited shell env var that may
-// shadow it (e.g. a stale RUNTIME_API_KEY in Windows env vars), but preserve
-// values passed explicitly via cross-env in npm scripts (e.g. VERIFIER_MODEL_MODE).
-const crossEnvVerifierMode = process.env.VERIFIER_MODEL_MODE;
+// shadow it (e.g. a stale RUNTIME_API_KEY in Windows env vars).
 config({ path: ".env.local", override: true });
-if (crossEnvVerifierMode) process.env.VERIFIER_MODEL_MODE = crossEnvVerifierMode;
 
 import { runOrchestration } from "../lib/orchestrator";
 import { extractPdfText } from "../lib/pdf-parse";
@@ -58,7 +55,6 @@ async function main(): Promise<void> {
 
   console.log(`\n🔬 PaperAgents Pipeline PDF Test`);
   console.log(`   PDF: ${resolvedPath}`);
-  console.log(`   Model Mode: ${process.env.VERIFIER_MODEL_MODE || "not set"}`);
 
   const buffer = fs.readFileSync(resolvedPath);
   console.log(`   File size: ${(buffer.length / 1024).toFixed(1)} KB`);
@@ -98,7 +94,11 @@ async function main(): Promise<void> {
       console.log(`Original Claim  : ${c.text}`);
       console.log(`Source Quote    : ${c.sourceQuote}`);
       console.log(`Cited As        : ${c.citedAs}`);
+      console.log(`Evidence Quote  : ${c.evidenceQuote}`);
       console.log(`Matched Source  : ${c.matchedSource}`);
+      if (c.documentEvidenceDistance != null) {
+        console.log(`Doc Evidence Dist: ${c.documentEvidenceDistance} chars from origin`);
+      }
       console.log(`Status          : ${c.status}`);
       console.log(`Reasoning       : ${c.reasoning}`);
       console.log(`Confidence Score: ${c.confidence}`);

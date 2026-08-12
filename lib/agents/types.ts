@@ -17,6 +17,19 @@ export interface AgentEvent {
   timestamp: number;
 }
 
+/**
+ * The Verifier treats the analyzed document's own full extracted text as an
+ * always-available evidence source, distinct from externally retrieved
+ * abstracts. The per-claim evidence is an EXCERPT of the document with the
+ * claim's own origin point (its sourceQuote plus 500 characters around it)
+ * structurally removed, so a claim can only be confirmed by a DIFFERENT part
+ * of the paper — a self-consistency verdict rather than external
+ * corroboration, and never self-matching. This label is a stable contract
+ * shared by the Verifier, the report renderers, and the PDF export.
+ */
+export const FULL_DOCUMENT_SOURCE_LABEL =
+  "Source Document (Full Text, excerpt excluding claim's origin point)";
+
 export interface RetrievedSource {
   title: string;
   summary: string;
@@ -42,6 +55,15 @@ export interface VerifiedClaim extends ExtractedClaim {
   evidenceQuote: string;
   reasoning: string;
   confidence: number;
+  /**
+   * For claims supported/fabricated against the analyzed document's own full
+   * text: the minimum character distance in the document between where the
+   * evidenceQuote occurs (outside the excluded origin window) and the claim's
+   * own sourceQuote span. Absent for external-source matches or when the
+   * sourceQuote could not be located in the document. Lets a reader confirm
+   * the evidence came from a genuinely different passage.
+   */
+  documentEvidenceDistance?: number;
 }
 
 /**

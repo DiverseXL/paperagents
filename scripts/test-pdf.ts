@@ -1,7 +1,5 @@
 import { config } from "dotenv";
-const crossEnvVerifierMode = process.env.VERIFIER_MODEL_MODE;
 config({ path: ".env.local", override: true });
-if (crossEnvVerifierMode) process.env.VERIFIER_MODEL_MODE = crossEnvVerifierMode;
 
 import { runOrchestration } from "../lib/orchestrator";
 

@@ -8,9 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "test:pipeline": "tsx scripts/test-pipeline.ts",
-    "test:pipeline:premium": "cross-env VERIFIER_MODEL_MODE=premium tsx scripts/test-pipeline.ts",
-    "test:pipeline:pdf": "cross-env VERIFIER_MODEL_MODE=premium tsx scripts/test-pipeline-pdf.ts",
-    "spot-check": "cross-env VERIFIER_MODEL_MODE=premium tsx scripts/spot-check-verifier.ts"
+    "test:pipeline:pdf": "tsx scripts/test-pipeline-pdf.ts",
+    "spot-check": "tsx scripts/spot-check-verifier.ts"
   },
   "dependencies": {
     "@types/better-sqlite3": "^9.6.0",
@@ -29,7 +28,6 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "cross-env": "^10.1.0",
     "dotenv": "^17.4.2",
     "eslint": "^9",
     "eslint-config-next": "16.3.0",

@@ -1,7 +1,5 @@
 import { config } from "dotenv";
-const crossEnvVerifierMode = process.env.VERIFIER_MODEL_MODE;
 config({ path: ".env.local", override: true });
-if (crossEnvVerifierMode) process.env.VERIFIER_MODEL_MODE = crossEnvVerifierMode;
 
 import { runOrchestration } from "../lib/orchestrator";
 import { AnalysisReport } from "../lib/agents/types";
@@ -19,7 +17,6 @@ function send(event: any): void {
 
 async function main(): Promise<void> {
   console.log(`\n🔍 Spot-Checking Verifier Quality`);
-  console.log(`   Model Mode: ${process.env.VERIFIER_MODEL_MODE || "not set"}`);
   console.log(`   Input: "${input}"\n`);
   console.log("─".repeat(60));
 

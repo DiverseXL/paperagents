@@ -1,6 +1,6 @@
 "use client";
 
-import type { AnalysisReport, VerifiedClaim } from "@/lib/agents/types";
+import { FULL_DOCUMENT_SOURCE_LABEL, type AnalysisReport, type VerifiedClaim } from "@/lib/agents/types";
 import { formatCost } from "@/lib/pipeline-reducer";
 
 interface ReportViewProps {
@@ -327,6 +327,32 @@ function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
+/**
+ * Self-consistency within the analyzed paper and external corroboration are
+ * different strengths of evidence — render them differently so a reader can
+ * tell whether a verdict came from the paper's own full text or a retrieved
+ * abstract. Uses the same stable label contract as the Verifier.
+ */
+function matchedSourceLabel(matchedSource: string): {
+  label: string;
+  tooltip: string;
+  inPaper: boolean;
+} {
+  if (matchedSource === FULL_DOCUMENT_SOURCE_LABEL) {
+    return {
+      label: "[In paper] Source Document (full text, cross-referenced)",
+      tooltip:
+        "Confirmed against the analyzed paper's own full text with the claim's origin point excluded — internal cross-reference, not external corroboration",
+      inPaper: true,
+    };
+  }
+  return {
+    label: `[External] ${matchedSource}`,
+    tooltip: "Retrieved external source (arXiv / Semantic Scholar / OpenAlex)",
+    inPaper: false,
+  };
+}
+
 function HistorianBriefingView({ briefing }: { briefing: NonNullable<AnalysisReport["historianBriefing"]> }) {
   // Absent matchQuality means the briefing predates the field — render normally.
   const inconclusive = briefing.matchQuality === "no_overlap_found";
@@ -432,6 +458,7 @@ function HistorianBriefingView({ briefing }: { briefing: NonNullable<AnalysisRep
 
 function ClaimRow({ claim, index }: { claim: VerifiedClaim; index: number }) {
   const meta = STATUS_META[claim.status];
+  const source = claim.matchedSource ? matchedSourceLabel(claim.matchedSource) : null;
 
   return (
     <article className="border-b border-hairline px-1 py-6 last:border-b-0">
@@ -457,9 +484,18 @@ function ClaimRow({ claim, index }: { claim: VerifiedClaim; index: number }) {
       ) : null}
 
       <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-1.5 font-mono text-[0.5625rem] uppercase tracking-[0.16em] text-muted-ink">
-        {claim.matchedSource ? (
-          <span className="max-w-[26rem] truncate" title={claim.matchedSource}>
-            Source: {claim.matchedSource}
+        {source ? (
+          <span
+            className={`max-w-[26rem] truncate ${
+              source.inPaper ? "text-accent-green" : ""
+            }`}
+            title={`${source.tooltip}${
+              claim.documentEvidenceDistance != null
+                ? ` · evidence ${claim.documentEvidenceDistance} chars from the claim's origin point`
+                : ""
+            }`}
+          >
+            Source: {source.label}
           </span>
         ) : null}
         <span>Confidence: {Math.round(claim.confidence * 100)}%</span>

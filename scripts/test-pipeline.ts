@@ -1,11 +1,8 @@
 import { config } from "dotenv";
 
 // Load .env.local explicitly and override any inherited shell env var that may
-// shadow it (e.g. a stale RUNTIME_API_KEY in Windows env vars), but preserve
-// values passed explicitly via cross-env in npm scripts (e.g. VERIFIER_MODEL_MODE).
-const crossEnvVerifierMode = process.env.VERIFIER_MODEL_MODE;
+// shadow it (e.g. a stale RUNTIME_API_KEY in Windows env vars).
 config({ path: ".env.local", override: true });
-if (crossEnvVerifierMode) process.env.VERIFIER_MODEL_MODE = crossEnvVerifierMode;
 import { runOrchestration } from "../lib/orchestrator";
 import { AnalysisReport } from "../lib/agents/types";
 

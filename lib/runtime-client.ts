@@ -31,7 +31,14 @@ const BTL_DEFAULT_CHAIN = ["btl-2", "deepseek-v4-flash"];
 // and the chain proceeds to the next model instead of burning the whole
 // outer budget. A timeout error has no `status`, so isRetriableModelError
 // treats it as retriable and the chain advances.
-const ATTEMPT_TIMEOUT_MS = 25_000;
+// Raised from 25s to 40s (2026-08): the verifier's full-document self-
+// verification feature made its prompt ~4x larger (~104k chars in testing),
+// pushing slow first responses past the old 25s cap — the chain then fell
+// through to the paid fallback model and died with a confusing 402. Note the
+// budget math: with the verifier's 45s outer cap, a first-attempt timeout now
+// leaves only ~5s of headroom for a fallback attempt (see verifier.ts
+// VERIFIER_CALL_TIMEOUT_MS if that needs revisiting).
+const ATTEMPT_TIMEOUT_MS = 40_000;
 
 export function getOpenRouterClient(): OpenAI | null {
   const apiKey = resolveKey("OPENROUTER_API_KEY");

@@ -11,6 +11,7 @@ import {
   AnalysisReport,
   CrossExaminationResult,
   ExtractedClaim,
+  FULL_DOCUMENT_SOURCE_LABEL,
   RetrievedSource,
   VerifiedClaim,
 } from "./agents/types";
@@ -251,7 +252,15 @@ export async function runOrchestration(
     const verifiedClaims: VerifiedClaim[] = await runVerifier(
       claims,
       sources,
-      makeOnEvent("verifier")
+      makeOnEvent("verifier"),
+      // The full extracted document text (the original inputText, BEFORE the
+      // extractor's 12000-char truncation) becomes an additional, always-
+      // available evidence source: claims the paper makes about itself can be
+      // confirmed by cross-referencing OTHER parts of the document, with no
+      // external retrieval needed. Text-only runs pass an empty inputText (the
+      // run route leaves it "" so extraction falls back to abstracts), so
+      // fullDocumentText is undefined there and their behavior is unchanged.
+      inputText && inputText.trim() ? inputText : undefined
     );
     console.timeEnd("verifier");
 
@@ -263,7 +272,15 @@ export async function runOrchestration(
     // here never fails the run — the result stays undefined.
     let crossExamination: CrossExaminationResult | undefined;
     try {
-      const evidenceClaims = verifiedClaims.filter((c) => c.matchedSource);
+      // Cross-examination compares EXTERNAL sources' abstracts against each
+      // other. Claims matched to the analyzed document's own full text carry
+      // the FULL_DOCUMENT_SOURCE_LABEL, which has no abstract for the
+      // cross-examiner to resolve — excluding them here keeps the stage's
+      // input contract (every matchedSource resolves to external source text)
+      // intact without touching cross-examiner logic itself.
+      const evidenceClaims = verifiedClaims.filter(
+        (c) => c.matchedSource && c.matchedSource !== FULL_DOCUMENT_SOURCE_LABEL
+      );
       const distinctMatchedSources = new Set(evidenceClaims.map((c) => c.matchedSource!));
       if (evidenceClaims.length >= 2 && distinctMatchedSources.size >= 2) {
         crossExamination = await runCrossExaminer(

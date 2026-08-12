@@ -1,6 +1,6 @@
 import { PDFDocument, PDFFont, PDFPage, StandardFonts, rgb } from "pdf-lib";
 import type { NextRequest } from "next/server";
-import type { AnalysisReport, VerifiedClaim } from "@/lib/agents/types";
+import { FULL_DOCUMENT_SOURCE_LABEL, type AnalysisReport, type VerifiedClaim } from "@/lib/agents/types";
 
 export const runtime = "nodejs";
 
@@ -74,6 +74,17 @@ function wrap(text: string, font: PDFFont, size: number, maxWidth: number): stri
     if (current) lines.push(current);
   }
   return lines;
+}
+
+/**
+ * In-paper self-consistency verdicts and external corroboration are different
+ * strengths of evidence — the export labels them differently, mirroring the
+ * on-screen report. Uses the same stable label contract as the Verifier.
+ */
+function formatMatchedSource(matchedSource: string): string {
+  return matchedSource === FULL_DOCUMENT_SOURCE_LABEL
+    ? "[In paper] Source Document (full text, cross-referenced)"
+    : `[External] ${matchedSource}`;
 }
 
 export async function POST(req: NextRequest): Promise<Response> {
@@ -197,7 +208,10 @@ export async function POST(req: NextRequest): Promise<Response> {
       draw(`“${claim.evidenceQuote}”`, 9.5, { font: italic, color: MUTED, gap: 3 });
     }
     const meta: string[] = [];
-    if (claim.matchedSource) meta.push(`Source: ${claim.matchedSource}`);
+    if (claim.matchedSource) meta.push(`Source: ${formatMatchedSource(claim.matchedSource)}`);
+    if (claim.matchedSource === FULL_DOCUMENT_SOURCE_LABEL && claim.documentEvidenceDistance != null) {
+      meta.push(`In-paper evidence: ${claim.documentEvidenceDistance} chars from claim's origin point`);
+    }
     meta.push(`Confidence: ${Math.round(claim.confidence * 100)}%`);
     if (claim.citedAs) meta.push(`Cited as: ${claim.citedAs}`);
     if (meta.length > 0) draw(meta.join("   ·   "), 8, { color: MUTED, gap: 2 });
