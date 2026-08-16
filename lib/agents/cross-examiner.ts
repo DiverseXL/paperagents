@@ -1,5 +1,6 @@
 import { callRuntime } from "../runtime-client";
 import { withTimeout } from "../with-timeout";
+import { FREE_MODELS } from "../models";
 import type {
   AgentEvent,
   CrossExaminationResult,
@@ -8,9 +9,9 @@ import type {
   VerifiedClaim,
 } from "./types";
 
-const CROSS_EXAMINER_SYSTEM_PROMPT = `You are the Cross-Examiner agent in a research verification pipeline. Your job is to check whether the retrieved sources genuinely disagree with each other about a claim — not to re-verify the claims themselves (the Verifier has already done that), but to find places where the evidence is NOT unanimous.
+const CROSS_EXAMINER_SYSTEM_PROMPT = `You are the Cross-Examiner agent in a constrained multi-agent research verification system. Your job is to check whether the retrieved sources genuinely disagree with each other about a claim — not to re-verify the claims themselves (the Falsifier has already done that), but to find places where the evidence is NOT unanimous.
 
-You will receive a list of verified claims, each with the title of the source it was matched against and that source's text (its abstract). When two different claims are matched against different sources that discuss the same subject, those sources may disagree with each other.
+You will receive a list of claims that SURVIVED the Falsifier, each with its claimId, the title of the source it was matched against and that source's text (its abstract). When two different claims are matched against different sources that discuss the same subject, those sources may disagree with each other.
 
 Rules:
 - Output ONLY valid JSON, no preamble, no markdown fences.
@@ -20,13 +21,14 @@ Rules:
   - "partial_disagreement": sources differ meaningfully without outright contradiction (e.g. materially different numbers, different scopes, or one qualifies the other's claim).
 - conflictingSources: for each source involved, give its title, a short verbatim excerpt from its abstract showing its position, and the position within the source (usually "Abstract").
 - claimText should be the text of the claim this conflict concerns.
+- claimIds should list the ids of EVERY claim involved in this conflict (the claim(s) whose matched sources disagree). These ids will be used to reopen the involved claims for one more falsification pass — list them accurately, exactly as given to you.
 - If the sources are consistent, return an EMPTY conflicts array. Do NOT manufacture disagreement to seem thorough — an honest "no conflicts" is a valid and valuable result.
 - Output schema:
-{"conflicts": [{"claimText": "string", "conflictingSources": [{"sourceTitle": "string", "excerpt": "string", "position": "string"}], "severity": "direct_contradiction|partial_disagreement"}], "summary": "string"}
+{"conflicts": [{"claimText": "string", "claimIds": ["string"], "conflictingSources": [{"sourceTitle": "string", "excerpt": "string", "position": "string"}], "severity": "direct_contradiction|partial_disagreement"}], "summary": "string"}
 
 The summary is 1-2 plain sentences summarizing what the cross-examination found (e.g. how many conflicts, or that all examined sources were consistent).`;
 
-// Safety cap on the cross-examiner LLM call — same 45s ceiling as the verifier
+// Safety cap on the cross-examiner LLM call — same 45s ceiling as the falsifier
 // and synthesizer. A timeout rejects callRuntime and flows into the fallback
 // below; the stage must never block the pipeline.
 const CROSS_EXAMINER_CALL_TIMEOUT_MS = 45_000;
@@ -44,6 +46,7 @@ interface RawConflictSource {
 
 interface RawConflict {
   claimText?: unknown;
+  claimIds?: unknown;
   conflictingSources?: unknown;
   severity?: unknown;
 }
@@ -68,6 +71,13 @@ function parseConflicts(content: string): CrossExaminationResult | null {
         continue;
       }
 
+      // Claim ids involved in this conflict (used by the orchestrator to
+      // reopen them for one more falsification pass). Optional: falls back to
+      // text matching when the model omits them.
+      const claimIds: string[] = Array.isArray(c.claimIds)
+        ? c.claimIds.filter((x): x is string => typeof x === "string").slice(0, 4)
+        : [];
+
       const conflictingSources: EvidenceConflict["conflictingSources"] = [];
       // Never render more than 4 competing sources per conflict.
       for (const rawSource of c.conflictingSources.slice(0, 4)) {
@@ -86,6 +96,7 @@ function parseConflicts(content: string): CrossExaminationResult | null {
 
       conflicts.push({
         claimText: c.claimText,
+        claimIds,
         conflictingSources,
         severity: c.severity,
       });
@@ -106,7 +117,7 @@ function parseConflicts(content: string): CrossExaminationResult | null {
 }
 
 /**
- * The Cross-Examiner — a fifth, additive stage between the Verifier and the
+ * The Cross-Examiner — an additive stage between the Falsifier and the
  * Synthesizer. Checks whether genuinely different sources contradict each other
  * about the same subject. The orchestrator only calls this when there is enough
  * cross-source evidence to examine (>= 2 verified claims matched to >= 2
@@ -135,7 +146,7 @@ export async function runCrossExaminer(
   }));
 
   /**
-   * The verifier's matchedSource is free text from the LLM, so it rarely equals
+   * The falsifier's matchedSource is free text from the LLM, so it rarely equals
    * a source title exactly. Exact key first, then a containment fallback (the
    * matchedSource mentions the title or the title mentions the matchedSource),
    * preferring the longest title — so the model never sees an empty excerpt
@@ -163,8 +174,11 @@ export async function runCrossExaminer(
 
   // Intentional token-budget cap — beyond 12 evidence claims the prompt would
   // grow unboundedly; the most relevant claims were already extracted first.
+  // claimId is included so the orchestrator can reopen the involved claims for
+  // one more falsification pass when a direct contradiction is found.
   const userMessage = JSON.stringify({
     claims: evidenceClaims.slice(0, 12).map((c) => ({
+      claimId: c.id,
       text: c.text,
       status: c.status,
       matchedSource: c.matchedSource,
@@ -173,7 +187,7 @@ export async function runCrossExaminer(
   });
 
   const request = {
-    model: "deepseek/deepseek-chat",
+    model: FREE_MODELS.default,
     messages: [
       { role: "system" as const, content: CROSS_EXAMINER_SYSTEM_PROMPT },
       { role: "user" as const, content: userMessage },

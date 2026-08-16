@@ -29,18 +29,28 @@ const report: AnalysisReport = {
       reasoning:
         "The quoted sentence appears verbatim in the source's abstract.",
       confidence: 0.99,
+      graphStatus: "survived",
+      groundingCheckPassed: true,
+      originPointExcluded: false,
+      challenges: [],
+      finalVerdict: "supported",
     },
     {
       id: "seed-c2",
       text: "BERT outperforms humans on the GLUE benchmark on every single task.",
       sourceQuote: "BERT outperforms humans on GLUE",
       citedAs: "Devlin et al., 2019",
-      status: "unsupported",
+      status: "unverifiable",
       matchedSource: null,
       evidenceQuote: "",
       reasoning:
         "No retrieved source text contains this claim verbatim or in substance — the GLUE leaderboard figures are not present in the corpus.",
       confidence: 0.87,
+      graphStatus: "unverifiable",
+      groundingCheckPassed: false,
+      originPointExcluded: false,
+      challenges: [],
+      finalVerdict: "unverifiable",
     },
   ],
   consensus:
@@ -68,7 +78,7 @@ const report: AnalysisReport = {
         cacheTier: "silver",
       },
       {
-        agent: "verifier",
+        agent: "falsifier",
         benchmarkCost: 0.00098,
         customerCharge: 0.00051,
         cacheTier: "gold",

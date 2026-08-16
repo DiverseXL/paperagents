@@ -23,7 +23,7 @@ const plexMono = IBM_Plex_Mono({
 export const metadata: Metadata = {
   title: "PaperAgents — The Citation Verification Desk",
   description:
-    "PaperAgents puts every citation in a research paper on the record: four agents — Retriever, Extractor, Verifier, Synthesizer — gather the sources, isolate the claims, check each against the source text, and file a verdict.",
+    "PaperAgents puts every citation in a research paper on the record: four agents — Retriever, Extractor, Falsifier, Synthesizer — gather the sources, isolate the claims, try to break each one against the source text, and file a verdict.",
   icons: {
     icon: [
       { url: "/favicon.ico", sizes: "any" },

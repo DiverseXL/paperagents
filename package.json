@@ -9,7 +9,8 @@
     "lint": "eslint",
     "test:pipeline": "tsx scripts/test-pipeline.ts",
     "test:pipeline:pdf": "tsx scripts/test-pipeline-pdf.ts",
-    "spot-check": "tsx scripts/spot-check-verifier.ts"
+    "spot-check": "tsx scripts/spot-check-verifier.ts",
+    "verify:claim-graph": "tsx scripts/verify-claim-graph.ts"
   },
   "dependencies": {
     "@types/better-sqlite3": "^9.6.0",

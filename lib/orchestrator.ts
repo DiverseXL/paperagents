@@ -1,15 +1,18 @@
 import { runRetriever } from "./agents/retriever";
 import { runExtractor } from "./agents/extractor";
-import { runVerifier } from "./agents/verifier";
+import { runFalsifier, normalizeForGrounding } from "./agents/falsifier";
 import { runSynthesizer } from "./agents/synthesizer";
 import { runCrossExaminer } from "./agents/cross-examiner";
 import { findPriorAnalysis } from "./db";
 import { generateHistorianBriefing } from "./historian";
+import { ClaimGraph } from "./claim-graph";
 import {
   AgentEvent,
   AgentRole,
   AnalysisReport,
+  ClaimStatus,
   CrossExaminationResult,
+  EvidenceConflict,
   ExtractedClaim,
   FULL_DOCUMENT_SOURCE_LABEL,
   RetrievedSource,
@@ -69,7 +72,7 @@ const SOURCE_NAME_BY_KEY: Record<SourceKey, string> = {
 const AGENT_DISPLAY_NAME: Record<AgentRole, string> = {
   retriever: "Retriever",
   extractor: "Extractor",
-  verifier: "Verifier",
+  falsifier: "Falsifier",
   synthesizer: "Synthesizer",
 };
 
@@ -129,7 +132,7 @@ function trackDataQualityEvent(tracker: QualityTracker, event: AgentEvent): void
  * Turns collected facts into the report's disclosure notes.
  *
  * The 0-claims note is derived from the final claim count rather than the
- * extractor's done event: the verifier maps claims 1:1, so zero verified
+ * extractor's done event: the falsifier maps claims 1:1, so zero verified
  * claims always means extraction returned nothing — whether it reported a
  * clean "0 claims" done event or failed without one (timeout, parse
  * failure after both attempts).
@@ -172,6 +175,41 @@ function buildDataQualityNotes(
   return notes;
 }
 
+/** Rebuilds the ExtractedClaim shape the Falsifier consumes from a verified claim. */
+function toExtractedClaim(vc: VerifiedClaim): ExtractedClaim {
+  return {
+    id: vc.id,
+    text: vc.text,
+    sourceQuote: vc.sourceQuote,
+    citedAs: vc.citedAs,
+  };
+}
+
+/**
+ * Resolves which claims a Cross-Examiner conflict concerns. Prefers the
+ * model-supplied claimIds (only ids that are actually in the graph count);
+ * falls back to deterministic normalized-text matching on the conflict's
+ * claimText. Only ids of claims that are currently "survived" may be returned
+ * — terminal claims can never be re-opened.
+ */
+function resolveConflictClaimIds(
+  conflict: EvidenceConflict,
+  survivedById: Map<string, VerifiedClaim>
+): string[] {
+  if (conflict.claimIds && conflict.claimIds.length > 0) {
+    const ids = conflict.claimIds.filter((id) => survivedById.has(id));
+    if (ids.length >= 2) return ids;
+  }
+  const norm = normalizeForGrounding(conflict.claimText);
+  const matches: string[] = [];
+  if (norm) {
+    for (const [id, c] of survivedById) {
+      if (normalizeForGrounding(c.text) === norm) matches.push(id);
+    }
+  }
+  return matches;
+}
+
 export async function runOrchestration(
   input: string,
   inputText: string,
@@ -206,10 +244,26 @@ export async function runOrchestration(
     };
   }
 
+  /**
+   * Publishes a live snapshot of the Claim Graph to the client, so the UI can
+   * render claim status badges as they transition (PENDING → UNDER CHALLENGE →
+   * SURVIVED / FALSIFIED / UNVERIFIABLE). Not an agent event — it carries the
+   * graph payload and is logged in the Live Despatch feed like any other wire
+   * message.
+   */
+  function emitClaimGraph(graph: ClaimGraph): void {
+    send({
+      agent: "claim-graph",
+      status: "update",
+      claims: graph.snapshot(),
+      timestamp: Date.now(),
+    });
+  }
+
   // Per-agent wall-clock timing (console.time/timeEnd) to see where end-to-end
-  // latency actually goes before optimizing anything. The four agent calls are
+  // latency actually goes before optimizing anything. The agent calls are
   // inherently sequential (each stage depends on the previous), so the sum of
-  // the four timers should be ~total.
+  // the timers should be ~total.
   console.time("pipeline-total");
   try {
     // ── Step 1: Retrieval ──────────────────────────────────────────────────
@@ -247,12 +301,23 @@ export async function runOrchestration(
     );
     console.timeEnd("extractor");
 
-    // ── Step 4: Verification ───────────────────────────────────────────────
-    console.time("verifier");
-    const verifiedClaims: VerifiedClaim[] = await runVerifier(
+    // ── Step 3.5: The Claim Graph ─────────────────────────────────────────
+    // The single shared state every agent communicates through. The Extractor
+    // is the only agent that writes here at this point, and only as "pending".
+    const graph = ClaimGraph.registerAll(claims);
+    emitClaimGraph(graph);
+
+    // ── Step 4: Falsification (adversarial) ───────────────────────────────
+    // The Falsifier tries to BREAK each claim. It is the only agent allowed to
+    // move a claim to a terminal status, and it does so through the graph
+    // (supported + grounded → survived; fabricated + grounded → falsified;
+    // everything else → unverifiable, permanent for the run).
+    console.time("falsifier");
+    let verifiedClaims: VerifiedClaim[] = await runFalsifier(
       claims,
       sources,
-      makeOnEvent("verifier"),
+      makeOnEvent("falsifier"),
+      graph,
       // The full extracted document text (the original inputText, BEFORE the
       // extractor's 12000-char truncation) becomes an additional, always-
       // available evidence source: claims the paper makes about itself can be
@@ -262,29 +327,41 @@ export async function runOrchestration(
       // fullDocumentText is undefined there and their behavior is unchanged.
       inputText && inputText.trim() ? inputText : undefined
     );
-    console.timeEnd("verifier");
+    console.timeEnd("falsifier");
+    emitClaimGraph(graph);
 
-    // ── Step 4.5: The Cross-Examiner ───────────────────────────────────────
+    // ── Step 4.5: The Cross-Examiner + one re-challenge loop ───────────────
     // Purely additive: only runs when there is enough cross-source evidence to
-    // examine (>= 2 verified claims matched to >= 2 distinct sources). The
+    // examine (>= 2 survived claims matched to >= 2 distinct sources). The
     // retriever's merge keeps only one summary per paper, so conflicts can only
     // be found ACROSS different claims that cite different sources. A failure
     // here never fails the run — the result stays undefined.
     let crossExamination: CrossExaminationResult | undefined;
     try {
-      // Cross-examination compares EXTERNAL sources' abstracts against each
-      // other. Claims matched to the analyzed document's own full text carry
-      // the FULL_DOCUMENT_SOURCE_LABEL, which has no abstract for the
+      // The Cross-Examiner only ever sees claims that SURVIVED the Falsifier —
+      // it hunts for disagreements among the evidence that is on the record.
+      // Claims matched to the analyzed document's own full text carry the
+      // FULL_DOCUMENT_SOURCE_LABEL, which has no abstract for the
       // cross-examiner to resolve — excluding them here keeps the stage's
       // input contract (every matchedSource resolves to external source text)
       // intact without touching cross-examiner logic itself.
-      const evidenceClaims = verifiedClaims.filter(
-        (c) => c.matchedSource && c.matchedSource !== FULL_DOCUMENT_SOURCE_LABEL
+      const survivedById = new Map(
+        verifiedClaims
+          .filter(
+            (c) =>
+              c.graphStatus === "survived" &&
+              c.groundingCheckPassed === true &&
+              c.matchedSource &&
+              c.matchedSource !== FULL_DOCUMENT_SOURCE_LABEL
+          )
+          .map((c) => [c.id, c] as [string, VerifiedClaim])
       );
-      const distinctMatchedSources = new Set(evidenceClaims.map((c) => c.matchedSource!));
-      if (evidenceClaims.length >= 2 && distinctMatchedSources.size >= 2) {
+      const distinctMatchedSources = new Set(
+        [...survivedById.values()].map((c) => c.matchedSource!)
+      );
+      if (survivedById.size >= 2 && distinctMatchedSources.size >= 2) {
         crossExamination = await runCrossExaminer(
-          verifiedClaims,
+          [...survivedById.values()],
           sources,
           (event) => send(event)
         );
@@ -296,11 +373,75 @@ export async function runOrchestration(
       );
     }
 
-    // ── Step 5: Synthesis ──────────────────────────────────────────────────
+    // ── Re-challenge loop (one pass only) ──────────────────────────────────
+    // If the Cross-Examiner found a DIRECT contradiction between two survived
+    // claims, the graph reopens those claims ("under_challenge") and the
+    // Falsifier runs once more on exactly those claims, after which the
+    // grounding + status gate is re-applied. Falsified/unverifiable claims are
+    // terminal and can never be reopened.
+    if (crossExamination && crossExamination.conflicts.length > 0) {
+      const survivedById = new Map(
+        verifiedClaims
+          .filter((c) => c.graphStatus === "survived" && c.groundingCheckPassed === true)
+          .map((c) => [c.id, c] as [string, VerifiedClaim])
+      );
+
+      const challengedIds = new Set<string>();
+      for (const conflict of crossExamination.conflicts) {
+        if (conflict.severity !== "direct_contradiction") continue;
+        for (const id of resolveConflictClaimIds(conflict, survivedById)) {
+          challengedIds.add(id);
+        }
+      }
+
+      if (challengedIds.size >= 2) {
+        send({
+          agent: "cross-examiner",
+          status: "streaming",
+          message: `Direct contradiction found between ${challengedIds.size} survived claim(s) — reopening them for one more falsification pass`,
+          timestamp: Date.now(),
+        });
+
+        graph.challenge(
+          [...challengedIds],
+          "cross-examiner",
+          "direct contradiction between survived claims; one re-falsification pass ordered"
+        );
+        emitClaimGraph(graph);
+
+        const challengedClaims = verifiedClaims
+          .filter((c) => challengedIds.has(c.id))
+          .map(toExtractedClaim);
+
+        const reVerified = await runFalsifier(
+          challengedClaims,
+          sources,
+          makeOnEvent("falsifier"),
+          graph,
+          inputText && inputText.trim() ? inputText : undefined,
+          true
+        );
+
+        // Merge the re-checked claims back into the report, preserving order.
+        const reVerifiedById = new Map(reVerified.map((c) => [c.id, c]));
+        verifiedClaims = verifiedClaims.map((c) => reVerifiedById.get(c.id) ?? c);
+        emitClaimGraph(graph);
+      }
+    }
+
+    // ── Step 5: Synthesis (hard-gated by the Claim Graph) ──────────────────
+    // The Synthesizer/Arbiter may ONLY reason from claims that survived
+    // adversarial falsification AND the deterministic grounding check. Excluded
+    // claims go only to the Gaps section — never into the consensus.
     console.time("synthesizer");
+    const survivedIds = new Set(graph.survived().map((n) => n.id));
+    const survivedClaims = verifiedClaims.filter((c) => survivedIds.has(c.id));
+    const excludedClaims = verifiedClaims.filter((c) => !survivedIds.has(c.id));
+
     const { consensus, gaps } = await runSynthesizer(
       input,
-      verifiedClaims,
+      survivedClaims,
+      excludedClaims,
       makeOnEvent("synthesizer"),
       crossExamination
     );
@@ -318,12 +459,29 @@ export async function runOrchestration(
     const totalSaved = totalBenchmarkCost - totalCustomerCharge;
 
     // ── Step 7: Build report ───────────────────────────────────────────────
+    const statusCounts: Record<ClaimStatus, number> = {
+      pending: 0,
+      under_challenge: 0,
+      survived: 0,
+      falsified: 0,
+      unverifiable: 0,
+    };
+    for (const c of verifiedClaims) {
+      statusCounts[c.graphStatus ?? "unverifiable"] =
+        (statusCounts[c.graphStatus ?? "unverifiable"] || 0) + 1;
+    }
+
     const report: AnalysisReport = {
       input,
       claims: verifiedClaims,
       consensus,
       gaps,
       generatedAt: Date.now(),
+      integrityGate: {
+        survivedCount: survivedClaims.length,
+        excludedCount: excludedClaims.length,
+        statusCounts,
+      },
       costSummary: {
         totalBenchmarkCost,
         totalCustomerCharge,

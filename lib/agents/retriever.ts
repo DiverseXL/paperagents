@@ -4,6 +4,7 @@ import type { ArxivResult } from "../sources/arxiv";
 import { searchSemanticScholar } from "../sources/semantic-scholar";
 import { searchOpenAlex } from "../sources/openalex";
 import { withTimeout } from "../with-timeout";
+import { FREE_MODELS } from "../models";
 import { AgentEvent, RetrievedSource } from "./types";
 
 const RETRIEVER_SYSTEM_PROMPT = `You are the Retriever agent in a research verification pipeline.
@@ -58,7 +59,7 @@ export async function runRetriever(
   try {
     const runtimeRes = await withTimeout(
       callRuntime({
-        model: "deepseek/deepseek-chat",
+        model: FREE_MODELS.default,
         messages: [
           { role: "system", content: RETRIEVER_SYSTEM_PROMPT },
           { role: "user", content: input },
@@ -224,7 +225,7 @@ export async function runRetriever(
     });
   }
   // Title-search results go to the FRONT: they are the most direct evidence for
-  // the document being analyzed, and the verifier caps sources at 15 — if they
+  // the document being analyzed, and the falsifier caps sources at 15 — if they
   // were appended after the topic-query results, the paper could be sliced off.
   allSources.unshift(...titleSources);
 
@@ -232,7 +233,7 @@ export async function runRetriever(
   // by normalized title (lowercased, trimmed, whitespace-collapsed) across all
   // three APIs, then emit one enriched record per unique paper. The merged
   // record keeps the longest non-empty summary (most complete evidence for the
-  // Verifier), prefers a real URL when sources disagree, and flags papers that
+  // Falsifier), prefers a real URL when sources disagree, and flags papers that
   // were independently found by more than one literature database.
   const groups = new Map<string, RetrievedSource[]>();
   for (const src of allSources) {

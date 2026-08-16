@@ -1,6 +1,11 @@
 "use client";
 
-import { FULL_DOCUMENT_SOURCE_LABEL, type AnalysisReport, type VerifiedClaim } from "@/lib/agents/types";
+import {
+  FULL_DOCUMENT_SOURCE_LABEL,
+  type AnalysisReport,
+  type ClaimStatus,
+  type VerifiedClaim,
+} from "@/lib/agents/types";
 import { formatCost } from "@/lib/pipeline-reducer";
 
 interface ReportViewProps {
@@ -12,17 +17,34 @@ interface ReportViewProps {
 
 const STATUS_STAMP: Record<VerifiedClaim["status"], string> = {
   supported: "stamp--green",
-  unsupported: "stamp--red",
   fabricated: "stamp--red",
-  unclear: "stamp--gray",
+  unverifiable: "stamp--gray",
 };
 
 const STATUS_META: Record<VerifiedClaim["status"], { tone: string; note: string }> = {
-  supported: { tone: "text-accent-green", note: "Source text backs this up" },
-  unsupported: { tone: "text-accent-red", note: "No source text backs this up" },
-  fabricated: { tone: "text-accent-red", note: "Attributed to a source that does not contain it" },
-  unclear: { tone: "text-muted-ink", note: "Evidence could not be resolved" },
+  supported: { tone: "text-accent-green", note: "Falsification attempted and failed — a real quote grounds it" },
+  fabricated: { tone: "text-accent-red", note: "Attributed to a source that clearly does not say it" },
+  unverifiable: { tone: "text-muted-ink", note: "Evidence missing, partial, ambiguous, or ungrounded" },
 };
+
+/**
+ * Claim Graph lifecycle stamp (PENDING → UNDER CHALLENGE → SURVIVED /
+ * FALSIFIED / UNVERIFIABLE). Distinguishes the graph's decision state from the
+ * Falsifier's verdict (`claim.status`).
+ */
+const GRAPH_STATUS_STAMP: Record<ClaimStatus, string> = {
+  pending: "stamp--gray",
+  under_challenge: "stamp--red",
+  survived: "stamp--green",
+  falsified: "stamp--red",
+  unverifiable: "stamp--gray",
+};
+
+function graphStatusOf(claim: VerifiedClaim): ClaimStatus {
+  // Stale reports (pre-graph) fall back to the verdict.
+  if (claim.graphStatus) return claim.graphStatus;
+  return claim.status === "supported" ? "survived" : claim.status === "fabricated" ? "falsified" : "unverifiable";
+}
 
 function filedAt(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString("en-US", { hour12: false });
@@ -65,6 +87,34 @@ export default function ReportView({
           {exportError}
         </p>
       ) : null}
+
+      {/* ── The Scientific Integrity Gate — autonomy is visible here ── */}
+      {/* Only claims that survived adversarial falsification + the
+          deterministic grounding check grounded the consensus; everything
+          else went to Gaps and was excluded from the conclusions. */}
+      <aside
+        aria-label="Scientific integrity gate"
+        className="mt-5 border-2 border-ink bg-paper p-5 sm:p-6"
+      >
+        <div className="flex items-center gap-3">
+          <span
+            aria-hidden="true"
+            className="flex h-6 w-6 shrink-0 items-center justify-center border-2 border-ink bg-ink font-mono text-xs font-bold leading-none text-paper"
+          >
+            ⚖
+          </span>
+          <h3 className="font-mono text-[0.625rem] font-semibold uppercase tracking-[0.25em] text-ink">
+            Scientific Integrity Gate
+          </h3>
+        </div>
+        <p className="mt-3 max-w-3xl text-[0.9375rem] leading-6 text-ink/85">
+          Only claims that survived adversarial falsification by the Falsifier
+          and a deterministic verbatim grounding check are used in the
+          consensus. All other claims are listed under Gaps and are excluded
+          from conclusions.
+        </p>
+        <IntegrityGateCounts report={report} />
+      </aside>
 
       {/* ── Data-quality disclosure — a caution, not an error ───────── */}
       {/* Optional-chained so a stale report lacking the field still renders. */}
@@ -274,6 +324,48 @@ export default function ReportView({
   );
 }
 
+function IntegrityGateCounts({ report }: { report: AnalysisReport }) {
+  const counts =
+    report.integrityGate ??
+    (() => {
+      // Stale pre-graph reports: derive a best-effort rollup from the claims.
+      const statusCounts: Record<ClaimStatus, number> = {
+        pending: 0,
+        under_challenge: 0,
+        survived: 0,
+        falsified: 0,
+        unverifiable: 0,
+      };
+      for (const claim of report.claims) {
+        const s = graphStatusOf(claim);
+        statusCounts[s] = (statusCounts[s] || 0) + 1;
+      }
+      return {
+        survivedCount: statusCounts.survived,
+        excludedCount: report.claims.length - statusCounts.survived,
+        statusCounts,
+      };
+    })();
+
+  const order: ClaimStatus[] = [
+    "survived",
+    "falsified",
+    "unverifiable",
+    "under_challenge",
+    "pending",
+  ];
+  const parts = order
+    .filter((s) => (counts.statusCounts[s] ?? 0) > 0)
+    .map((s) => `${counts.statusCounts[s]} ${s}`);
+
+  return (
+    <p className="mt-3 font-mono text-[0.625rem] uppercase tracking-[0.18em] text-muted-ink">
+      {counts.survivedCount} survived the gate · {counts.excludedCount} excluded
+      {parts.length > 0 ? ` (${parts.join(", ")})` : ""}
+    </p>
+  );
+}
+
 function EvidenceConflictRow({
   conflict,
   index,
@@ -331,7 +423,7 @@ function truncate(text: string, max: number): string {
  * Self-consistency within the analyzed paper and external corroboration are
  * different strengths of evidence — render them differently so a reader can
  * tell whether a verdict came from the paper's own full text or a retrieved
- * abstract. Uses the same stable label contract as the Verifier.
+ * abstract. Uses the same stable label contract as the Falsifier.
  */
 function matchedSourceLabel(matchedSource: string): {
   label: string;
@@ -470,7 +562,20 @@ function ClaimRow({ claim, index }: { claim: VerifiedClaim; index: number }) {
           {claim.text}
         </p>
         <div className="flex shrink-0 flex-col items-start gap-1.5 sm:items-end">
-          <span className={`stamp ${STATUS_STAMP[claim.status]}`}>{claim.status}</span>
+          <span
+            className={`stamp ${STATUS_STAMP[claim.status] ?? "stamp--gray"}`}
+            title="Falsifier verdict"
+          >
+            {claim.status}
+          </span>
+          <span
+            className={`stamp ${GRAPH_STATUS_STAMP[graphStatusOf(claim)]}`}
+            title="Claim Graph status — the lifecycle decision that gates the consensus"
+          >
+            {graphStatusOf(claim) === "under_challenge"
+              ? "under challenge"
+              : graphStatusOf(claim)}
+          </span>
           <span className={`font-mono text-[0.5625rem] uppercase tracking-[0.15em] ${meta.tone}`}>
             {meta.note}
           </span>
@@ -501,6 +606,13 @@ function ClaimRow({ claim, index }: { claim: VerifiedClaim; index: number }) {
         <span>Confidence: {Math.round(claim.confidence * 100)}%</span>
         {claim.citedAs ? <span>Cited as: {claim.citedAs}</span> : null}
       </div>
+
+      {claim.challenges && claim.challenges.length > 1 ? (
+        <p className="mt-3 max-w-3xl font-mono text-[0.625rem] uppercase tracking-[0.16em] text-muted-ink">
+          Challenged {claim.challenges.length}× — the Cross-Examiner reopened
+          this claim after finding a contradiction between survived claims
+        </p>
+      ) : null}
 
       {claim.reasoning ? (
         <p className="mt-3 max-w-3xl text-sm leading-6 text-ink/70">{claim.reasoning}</p>

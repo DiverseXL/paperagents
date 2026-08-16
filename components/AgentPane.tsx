@@ -26,7 +26,7 @@ function connectorState(left: NodeState, right: NodeState): ConnectorState {
 const NODE_GLYPH: Record<AgentRole, string> = {
   retriever: "R",
   extractor: "E",
-  verifier: "V",
+  falsifier: "F",
   synthesizer: "S",
 };
 

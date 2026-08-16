@@ -18,14 +18,14 @@ const DESKS = [
   },
   {
     section: "Section C",
-    role: "The Verifier",
-    body: "Checks each claim against the retrieved sources\u2019 text, not their titles. Verdicts are stamped supported, unsupported, fabricated, or unclear — and quoted evidence must appear verbatim in the source, or the claim is downgraded.",
+    role: "The Falsifier",
+    body: "Tries to BREAK each claim rather than confirm it. A claim only survives if the Falsifier fails AND its quoted evidence appears verbatim in the source — a deterministic grounding check runs after the model, so an ungrounded quote downgrades the claim no matter what the reasoning says.",
     stamps: true,
   },
   {
     section: "Section D",
-    role: "The Synthesizer",
-    body: "Folds the verified claims into a consensus: what the evidence supports, what it contradicts, and where it runs out. Fabricated and unsupported claims are named in the final dispatch — not softened.",
+    role: "The Synthesizer (Arbiter)",
+    body: "Hard-gated by the Claim Graph: it may only reason from claims that survived adversarial falsification and the grounding check. Every other claim is filed under Gaps and is excluded from the conclusions — the consensus never promotes them.",
   },
 ];
 
@@ -33,8 +33,8 @@ function VerdictStamps() {
   return (
     /* In flow at the end of the dispatch — collision-free at every width. */
     <div aria-hidden="true" className="mt-5 flex justify-end gap-3">
-      <span className="stamp stamp--green rotate-2">Supported</span>
-      <span className="stamp stamp--red -rotate-2">Unsupported</span>
+      <span className="stamp stamp--green rotate-2">Survived</span>
+      <span className="stamp stamp--red -rotate-2">Falsified</span>
     </div>
   );
 }
@@ -94,9 +94,9 @@ export default function Home() {
 
           <p className="rise rise-2 mx-auto mt-6 max-w-2xl text-[0.975rem] leading-7 text-ink/90 sm:text-lg sm:leading-8">
             PaperAgents puts every citation in your paper on the record: four
-            agents — Retriever, Extractor, Verifier, Synthesizer — gather the
-            sources, isolate the claims, check each against the source text,
-            and file a verdict with the gaps spelled out.
+            agents — Retriever, Extractor, Falsifier, Synthesizer — gather the
+            sources, isolate the claims, try to break each one against the
+            source text, and file a verdict with the gaps spelled out.
           </p>
 
           <div className="rise rise-3 mt-10 flex flex-col items-center gap-4">
@@ -126,7 +126,7 @@ export default function Home() {
               id="desks-heading"
               className="text-center font-mono text-[0.6875rem] uppercase tracking-[0.3em] text-muted-ink"
             >
-              The Pipeline · Four Agents, One Verdict
+              The Claim Graph · Four Agents, One Verdict
             </h2>
             <span className="h-px flex-1 bg-hairline" />
           </div>
@@ -154,8 +154,8 @@ export default function Home() {
       <footer className="border-t border-hairline">
         <div className="mx-auto w-full max-w-6xl px-5 py-8 text-center sm:px-10">
           <p className="font-mono text-[0.625rem] uppercase tracking-[0.16em] text-muted-ink sm:text-[0.6875rem] sm:tracking-[0.25em]">
-            Powered by Runtime · Cross-verified via arXiv, Semantic Scholar
-            &amp; OpenAlex
+            Powered by free-tier OpenRouter models · Cross-verified via arXiv,
+            Semantic Scholar &amp; OpenAlex
           </p>
           <p className="mt-3 font-mono text-[0.5625rem] uppercase tracking-[0.16em] text-muted-ink sm:tracking-[0.25em]">
             © 2026 PaperAgents · Set in Fraunces, Inter &amp; IBM Plex Mono

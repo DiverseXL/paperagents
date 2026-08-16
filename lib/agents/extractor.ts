@@ -1,5 +1,6 @@
 import { callRuntime } from "../runtime-client";
 import { withTimeout } from "../with-timeout";
+import { FREE_MODELS } from "../models";
 import { AgentEvent, ExtractedClaim } from "./types";
 
 const EXTRACTOR_SYSTEM_PROMPT = `You are the Extractor agent in a research verification pipeline.
@@ -14,6 +15,14 @@ Rules:
 
 Output schema:
 {"claims": [{"text": "string", "sourceQuote": "string", "citedAs": "string"}]}`;
+
+// Hard cap matching the prompt's "at most 12 claims" contract. Enforced in
+// code because the free-tier models occasionally exceed the instructed limit,
+// and the falsifier's per-claim full-document excerpts (~7k chars each) then
+// overflow its output budget, truncating the JSON and forcing the parse-failure
+// fallback (all claims unverifiable). The first 12 claims are the ones the
+// model itself ranked most important.
+const MAX_EXTRACTED_CLAIMS = 12;
 
 // Safety cap on the extractor LLM call — 60s, higher than the other agents'
 // 45s cap: observed extractor latency reached 44.1s (vs 33-38s typical), so
@@ -47,7 +56,7 @@ export async function runExtractor(
 
   try {
     const request = {
-      model: "deepseek/deepseek-chat",
+      model: FREE_MODELS.default,
       messages: [
         { role: "system" as const, content: EXTRACTOR_SYSTEM_PROMPT },
         { role: "user" as const, content: processedText },
@@ -115,6 +124,7 @@ export async function runExtractor(
     let claimIndex = 1;
 
     for (const item of rawClaims) {
+      if (claims.length >= MAX_EXTRACTED_CLAIMS) break;
       const sourceQuote = String(item.sourceQuote || "").trim();
       const wordCount = sourceQuote ? sourceQuote.split(/\s+/).length : 0;
 

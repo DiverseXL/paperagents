@@ -1,6 +1,7 @@
 import { callRuntime } from "./runtime-client";
 import { withTimeout } from "./with-timeout";
-import { normalizeForGrounding } from "./agents/verifier";
+import { FREE_MODELS } from "./models";
+import { normalizeForGrounding } from "./agents/falsifier";
 import { getAnalysisId } from "./db";
 import type {
   AgentEvent,
@@ -37,6 +38,11 @@ Rules:
 const STATUS_SCORE: Record<string, number> = {
   supported: 3,
   fabricated: 2,
+  // New pipeline verdicts: "unverifiable" is the Falsifier's catch-all for
+  // missing/partial/ambiguous evidence (and covers old "unclear"/
+  // "unsupported" reports). Both old spellings stay in the map so a prior-run
+  // comparison against a pre-graph report still scores sensibly.
+  unverifiable: 1,
   unclear: 1,
   unsupported: 0,
 };
@@ -60,7 +66,7 @@ function classifyChange(
 /**
  * Deterministic claim matching between two reports. Claims are matched by
  * normalized text: lowercase, punctuation stripped, whitespace collapsed,
- * trimmed — the same normalization the verifier uses for quote-grounding.
+ * trimmed — the same normalization the Falsifier uses for quote-grounding.
  * Matching is exact-first, then a CONTAINMENT fallback (one normalized claim's
  * text is a substring of the other's) guarded by a minimum length so tiny
  * fragments like "the model" can never match. No fuzzy scoring — pure string
@@ -70,7 +76,7 @@ export function matchClaimsBetween(
   currentReport: AnalysisReport,
   priorReport: AnalysisReport
 ): { claimChanges: ClaimStatusChange[]; newClaimCount: number } {
-  // Reuses the verifier's canonical normalization for exact string matching
+  // Reuses the Falsifier's canonical normalization for exact string matching
   // (lowercase, punctuation stripped, whitespace collapsed, trimmed).
   const normalizeClaimText = normalizeForGrounding;
 
@@ -248,7 +254,7 @@ export async function generateHistorianBriefing(
   try {
     const runtimeRes = await withTimeout(
       callRuntime({
-        model: "deepseek/deepseek-chat",
+        model: FREE_MODELS.default,
         messages: [
           { role: "system", content: HISTORIAN_SYSTEM_PROMPT },
           {

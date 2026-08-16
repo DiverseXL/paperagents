@@ -2,6 +2,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import OpenAI from "openai";
 import { withTimeout } from "./with-timeout";
+import { FREE_MODELS, MODEL_OPTIONS } from "./models";
 
 function resolveKey(envVarName: string): string | undefined {
   const fromEnv = process.env[envVarName];
@@ -23,7 +24,17 @@ function resolveKey(envVarName: string): string | undefined {
   }
 }
 
-const OPENROUTER_DEFAULT_CHAIN = ["deepseek/deepseek-chat"];
+// Free-tier-only OpenRouter fallback chain, tried in order after each agent's
+// preferred model. Every model here is a `:free` model (or the `openrouter/free`
+// alias, which auto-routes to a free model), so inference cost stays $0.00 as
+// long as OpenRouter answers.
+const OPENROUTER_DEFAULT_CHAIN = [...FREE_MODELS.fallbacks];
+
+// BTL (Runtime, api.rntm.sh) fallback chain — a cheap, per-use OpenAI-compatible
+// gateway used only when the OpenRouter free chain is unavailable or exhausted.
+// It is billed per-use (well below OpenRouter's paid tier), so a fallback run
+// shows a small non-zero cost in the meter rather than the usual $0.00.
+const BTL_BASE_URL = "https://api.rntm.sh/v1";
 const BTL_DEFAULT_CHAIN = ["btl-2", "deepseek-v4-flash"];
 
 // Inner cap per model attempt in the fallback chain, shorter than the outer
@@ -31,13 +42,13 @@ const BTL_DEFAULT_CHAIN = ["btl-2", "deepseek-v4-flash"];
 // and the chain proceeds to the next model instead of burning the whole
 // outer budget. A timeout error has no `status`, so isRetriableModelError
 // treats it as retriable and the chain advances.
-// Raised from 25s to 40s (2026-08): the verifier's full-document self-
+// Raised from 25s to 40s (2026-08): the falsifier's full-document self-
 // verification feature made its prompt ~4x larger (~104k chars in testing),
 // pushing slow first responses past the old 25s cap — the chain then fell
-// through to the paid fallback model and died with a confusing 402. Note the
-// budget math: with the verifier's 45s outer cap, a first-attempt timeout now
-// leaves only ~5s of headroom for a fallback attempt (see verifier.ts
-// VERIFIER_CALL_TIMEOUT_MS if that needs revisiting).
+// through to the next model (or the paid fallback gateway) instead of
+// completing. Note the budget math: with the falsifier's 60s outer cap, a
+// first-attempt timeout now leaves ~20s of headroom for a fallback attempt
+// (see falsifier.ts FALSIFIER_CALL_TIMEOUT_MS if that needs revisiting).
 const ATTEMPT_TIMEOUT_MS = 40_000;
 
 export function getOpenRouterClient(): OpenAI | null {
@@ -58,7 +69,7 @@ export function getBtlClient(): OpenAI | null {
   if (!apiKey) return null;
   return new OpenAI({
     apiKey,
-    baseURL: "https://api.badtheorylabs.com/v1",
+    baseURL: BTL_BASE_URL,
   });
 }
 
@@ -110,6 +121,13 @@ async function callOpenRouter(
     messages: params.messages,
     usage: { include: true },
   };
+
+  // Per-model overrides (e.g. reasoning control on the free reasoning models)
+  // — see MODEL_OPTIONS in models.ts. `openrouter/free` has none by design.
+  const modelOptions = MODEL_OPTIONS[model];
+  if (modelOptions) {
+    Object.assign(requestOptions, modelOptions);
+  }
 
   if (params.maxTokens !== undefined) {
     requestOptions.max_tokens = params.maxTokens;
@@ -229,6 +247,7 @@ export async function callRuntime(params: {
 
   let openRouterError: Error | null = null;
 
+  // ── Primary: OpenRouter free-tier chain ($0.00) ──────────────────────────
   if (openRouterClient) {
     const preferredModel = params.model === "deepseek-v4-flash" ? "deepseek/deepseek-chat" : params.model;
     const chain = getModelChain(preferredModel, OPENROUTER_DEFAULT_CHAIN);
@@ -256,7 +275,7 @@ export async function callRuntime(params: {
     }
   }
 
-  // Fallback to BTL Runtime
+  // ── Fallback: BTL Runtime gateway (cheap per-use alternative) ────────────
   if (btlClient) {
     if (openRouterClient) {
       console.warn(
@@ -264,7 +283,13 @@ export async function callRuntime(params: {
       );
     }
 
-    const preferredModel = params.model === "deepseek/deepseek-chat" ? "deepseek-v4-flash" : params.model;
+    // OpenRouter `:free` model IDs (and the legacy deepseek/deepseek-chat
+    // default) don't exist on the BTL gateway — map them to its default model
+    // so the fallback chain doesn't burn an attempt on a nonexistent model.
+    const preferredModel =
+      params.model.endsWith(":free") || params.model === "deepseek/deepseek-chat"
+        ? "deepseek-v4-flash"
+        : params.model;
     const chain = getModelChain(preferredModel, BTL_DEFAULT_CHAIN);
 
     let btlError: Error | null = null;

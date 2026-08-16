@@ -7,7 +7,11 @@ import CostMeter from "@/components/CostMeter";
 import InputForm from "@/components/InputForm";
 import ReportView from "@/components/ReportView";
 import ThemeToggle from "@/components/ThemeToggle";
-import type { AnalysisReport } from "@/lib/agents/types";
+import type {
+  AnalysisReport,
+  ClaimGraphEntry,
+  ClaimStatus,
+} from "@/lib/agents/types";
 import {
   INITIAL_STATE,
   pipelineReducer,
@@ -24,6 +28,45 @@ const LOG_TONE: Record<string, string> = {
   done: "text-accent-green",
   error: "text-accent-red",
 };
+
+/**
+ * Live Claim Graph badge — renders one claim's lifecycle status as it moves
+ * through the constrained multi-agent system. Statuses come from the server's
+ * claim-graph SSE snapshots, not from the local report.
+ */
+const GRAPH_STATUS_STAMP: Record<ClaimStatus, string> = {
+  pending: "stamp--gray",
+  under_challenge: "stamp--red",
+  survived: "stamp--green",
+  falsified: "stamp--red",
+  unverifiable: "stamp--gray",
+};
+
+function ClaimBadge({ entry }: { entry: ClaimGraphEntry }) {
+  const label =
+    entry.graphStatus === "under_challenge"
+      ? "UNDER CHALLENGE"
+      : entry.graphStatus.toUpperCase();
+  return (
+    <span
+      title={entry.text}
+      className="flex max-w-full items-center gap-2 border border-hairline bg-paper px-2.5 py-1.5"
+    >
+      <span className="shrink-0 font-mono text-[0.5625rem] uppercase tracking-[0.12em] text-muted-ink">
+        {entry.id}
+      </span>
+      <span
+        className={`stamp ${GRAPH_STATUS_STAMP[entry.graphStatus]}`}
+        aria-label={`${entry.id}: ${label}`}
+      >
+        {label}
+      </span>
+      <span className="min-w-0 truncate font-mono text-[0.625rem] leading-4 text-ink/70">
+        {entry.text}
+      </span>
+    </span>
+  );
+}
 
 function LogLine({ entry }: { entry: LogEntry }) {
   const costBits: string[] = [];
@@ -263,7 +306,7 @@ export default function AnalyzePage() {
 
           <div className="mt-5 h-px w-full bg-ink" />
           <p className="mt-3 text-center font-mono text-[0.625rem] uppercase tracking-[0.3em] text-muted-ink sm:text-xs">
-            Retriever → Extractor → Verifier → Synthesizer · Live Dispatch
+            Retriever → Extractor → Falsifier → Synthesizer · Live Dispatch
           </p>
           <div className="mt-4 h-px w-full bg-hairline" />
         </header>
@@ -323,6 +366,30 @@ export default function AnalyzePage() {
             <AgentPane nodes={state.nodes} />
           </div>
         </section>
+
+        {/* ── Live Claim Graph badges ─────────────────────────────────── */}
+        {/* The shared state agents communicate through, shown as it moves:
+            PENDING → UNDER CHALLENGE → SURVIVED / FALSIFIED / UNVERIFIABLE. */}
+        {state.phase !== "idle" && state.claimGraph && state.claimGraph.length > 0 ? (
+          <section aria-labelledby="claim-graph-heading" className="mt-8">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2
+                id="claim-graph-heading"
+                className="font-mono text-[0.6875rem] uppercase tracking-[0.3em] text-muted-ink"
+              >
+                The Claim Graph
+              </h2>
+              <span className="font-mono text-[0.5625rem] uppercase tracking-[0.18em] text-muted-ink">
+                PENDING → UNDER CHALLENGE → SURVIVED / FALSIFIED / UNVERIFIABLE
+              </span>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2 border-2 border-ink bg-paper px-4 py-3">
+              {state.claimGraph.map((entry) => (
+                <ClaimBadge key={entry.id} entry={entry} />
+              ))}
+            </div>
+          </section>
+        ) : null}
 
         {/* ── Live agent log ───────────────────────────────────────────── */}
         {state.phase !== "idle" ? (

@@ -1,6 +1,11 @@
 import { PDFDocument, PDFFont, PDFPage, StandardFonts, rgb } from "pdf-lib";
 import type { NextRequest } from "next/server";
-import { FULL_DOCUMENT_SOURCE_LABEL, type AnalysisReport, type VerifiedClaim } from "@/lib/agents/types";
+import {
+  FULL_DOCUMENT_SOURCE_LABEL,
+  type AnalysisReport,
+  type ClaimStatus,
+  type VerifiedClaim,
+} from "@/lib/agents/types";
 
 export const runtime = "nodejs";
 
@@ -79,12 +84,22 @@ function wrap(text: string, font: PDFFont, size: number, maxWidth: number): stri
 /**
  * In-paper self-consistency verdicts and external corroboration are different
  * strengths of evidence — the export labels them differently, mirroring the
- * on-screen report. Uses the same stable label contract as the Verifier.
+ * on-screen report. Uses the same stable label contract as the Falsifier.
  */
 function formatMatchedSource(matchedSource: string): string {
   return matchedSource === FULL_DOCUMENT_SOURCE_LABEL
     ? "[In paper] Source Document (full text, cross-referenced)"
     : `[External] ${matchedSource}`;
+}
+
+/** One-line rollup of the integrity gate for the PDF banner. */
+function integrityGateLine(report: AnalysisReport): string {
+  const survived = report.claims.filter(
+    (c) =>
+      (c.graphStatus ??
+        (c.status === "supported" ? "survived" : "unverifiable")) === "survived"
+  ).length;
+  return `${survived} claim${survived === 1 ? "" : "s"} survived the gate · ${report.claims.length - survived} excluded from the consensus`;
 }
 
 export async function POST(req: NextRequest): Promise<Response> {
@@ -155,6 +170,22 @@ export async function POST(req: NextRequest): Promise<Response> {
   );
   rule();
 
+  // ── The Scientific Integrity Gate ────────────────────────────────────
+  // The same banner as the on-screen report: only claims that survived
+  // adversarial falsification + the deterministic grounding check grounded
+  // the consensus; everything else sits in Gaps.
+  heading("Scientific Integrity Gate");
+  draw(
+    "Only claims that survived adversarial falsification by the Falsifier and a deterministic verbatim grounding check are used in the consensus. All other claims are listed under Gaps and are excluded from conclusions.",
+    9,
+    { color: MUTED, gap: 2 }
+  );
+  draw(
+    integrityGateLine(report),
+    9,
+    { font: bold, color: INK, gap: 10 }
+  );
+
   // ── Input ─────────────────────────────────────────────────────────────
   heading("Input");
   draw(report.input, 10, { gap: 10 });
@@ -187,9 +218,25 @@ export async function POST(req: NextRequest): Promise<Response> {
   heading("Claim-by-claim verification", 8);
   const STATUS_TONE: Record<VerifiedClaim["status"], typeof INK> = {
     supported: GREEN,
-    unsupported: RED,
     fabricated: RED,
-    unclear: MUTED,
+    unverifiable: MUTED,
+  };
+
+  const GATE_TONE: Record<ClaimStatus, typeof INK> = {
+    pending: MUTED,
+    under_challenge: RED,
+    survived: GREEN,
+    falsified: RED,
+    unverifiable: MUTED,
+  };
+
+  const gateStatusOf = (claim: VerifiedClaim): ClaimStatus => {
+    if (claim.graphStatus) return claim.graphStatus;
+    return claim.status === "supported"
+      ? "survived"
+      : claim.status === "fabricated"
+        ? "falsified"
+        : "unverifiable";
   };
 
   report.claims.forEach((claim, i) => {
@@ -199,9 +246,14 @@ export async function POST(req: NextRequest): Promise<Response> {
     }
 
     draw(`${i + 1}. ${claim.text}`, 10, { font: bold, gap: 4 });
-    draw(`STATUS: ${claim.status.toUpperCase()}`, 9, {
+    draw(`VERDICT: ${claim.status.toUpperCase()}`, 9, {
       font: bold,
       color: STATUS_TONE[claim.status] ?? MUTED,
+      gap: 3,
+    });
+    draw(`GATE: ${gateStatusOf(claim).toUpperCase()}`, 8.5, {
+      font: bold,
+      color: GATE_TONE[gateStatusOf(claim)] ?? MUTED,
       gap: 3,
     });
     if (claim.evidenceQuote) {

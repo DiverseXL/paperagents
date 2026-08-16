@@ -1,5 +1,7 @@
 import { callRuntime } from "../runtime-client";
 import { withTimeout } from "../with-timeout";
+import { FREE_MODELS } from "../models";
+import { ClaimGraph } from "../claim-graph";
 import {
   AgentEvent,
   ExtractedClaim,
@@ -8,11 +10,29 @@ import {
   VerifiedClaim,
 } from "./types";
 
-const VERIFIER_SYSTEM_PROMPT = `You are the Verifier agent in a research verification pipeline.
+/**
+ * Falsifier system prompt — verifier-v5-adversarial.
+ *
+ * The Falsifier is adversarial by design: its job is to try to BREAK each
+ * claim, not to confirm it. A claim may only be marked "survived" when the
+ * Falsifier failed to break it AND a real, mechanically checkable quote
+ * exists. The verdict vocabulary is deliberately smaller than the old
+ * Verifier's: "unsupported" and "unclear" collapsed into "unverifiable",
+ * because the only question that matters at this stage is whether the claim
+ * can be grounded in real text or not.
+ */
+const FALSIFIER_SYSTEM_PROMPT = `You are the Falsifier agent in a constrained multi-agent research verification system.
+
+Your job is to try to BREAK each claim, not to confirm it. You succeed when you produce a concrete reason the claim should not be trusted. Only if you fail to break it may the claim be marked "survived".
 
 You will receive a list of claims (each with a source quote and citation label), a list of retrieved sources (title + abstract/summary from external literature databases), and — when the analyzed document's full text is available — per-claim excerpts of that document under the "${FULL_DOCUMENT_SOURCE_LABEL}" section.
 
-Your job is to determine, for each claim, whether the available text supports it: external sources corroborate the claim against OTHER papers, while the document excerpts let you confirm claims the paper makes about itself by cross-referencing DIFFERENT parts of the same paper.
+Your job is to attempt to falsify each claim against the available text: external sources test the claim against OTHER papers, while the document excerpts let you test claims the paper makes about itself by cross-referencing DIFFERENT parts of the same paper.
+
+Verdict rules:
+- "supported" — you tried to falsify the claim and FAILED: a real, checkable quote exists in the matched source's text that states the same specific assertion as the claim.
+- "fabricated" — the claim attributes something the source clearly does NOT say, and a real, checkable quote shows what the source actually says in its place.
+- "unverifiable" — the evidence is missing, partial, or ambiguous: no available text states the specific assertion, and no text clearly contradicts it either. Default to this whenever you cannot break the claim but also cannot ground it in a real quote.
 
 Critical rules:
 - The claim's sourceQuote comes from the original document being checked, NOT from the retrieved sources. It is not evidence of anything. Matching a source by title or topic is not sufficient — you must find the specific assertion in that source's actual text.
@@ -23,26 +43,26 @@ Critical rules:
 - Attribution discipline: when you quote text from the document excerpts, matchedSource MUST be exactly "${FULL_DOCUMENT_SOURCE_LABEL}" — never attribute document text to an external source's title just because that external source is the same paper.
 - Quoting discipline: evidenceQuote must be a single CONTIGUOUS verbatim run of the matched text. Never merge text from two places with an ellipsis ("...") — non-contiguous quotes cannot be mechanically verified and will be rejected.
 
+Falsification discipline:
+- You MUST output an evidenceQuote for ANY "supported" or "fabricated" verdict. That quote will be checked programmatically — if it is not found verbatim in the matched source's text, the claim is automatically downgraded to "unverifiable" regardless of your reasoning.
+- For "supported", the quote must be a short (under 40 words) VERBATIM run copied from the matched source's text that states the same specific assertion as the claim.
+- For "fabricated", the quote must be a short VERBATIM run from the matched source's text that shows what the source actually says in place of the claim.
+- Never mark "supported" because a topic matches — only because the specific assertion is grounded in a real quote. For "unverifiable", evidenceQuote must be an empty string.
+- If you cannot produce a verbatim excerpt from the matched source's text, the verdict must be "unverifiable", not "supported".
+
 Rules:
 - Output ONLY valid JSON, no preamble, no markdown fences.
-- For each claim, classify status as one of:
-  - "supported": a retrieved source's text — or the document text outside the claim's own excluded origin point — explicitly states the same specific assertion as the claim (matching numbers, named entities, or specific outcomes).
-  - "unsupported": NONE of the available text (external sources, or the document outside the claim's excluded origin point) mentions the claim's subject matter or topic AT ALL — the topic itself is absent, not just the specific detail.
-  - "unclear": at least one source's text or the document discusses the SAME topic or subject as the claim (e.g. same paper, same mechanism, same general subject), but the specific detail, number, or outcome is not explicitly stated anywhere outside the claim's own excluded origin point. This is the correct label whenever text is topically relevant but doesn't confirm the precise assertion — do not use "unsupported" in this case. In particular, a claim whose specific detail appears only at its own origin point is "unclear", never "supported".
-  - "fabricated": a retrieved source's text or the document's text directly contradicts the claim.
-- Decision rule to apply before choosing between "unsupported" and "unclear": first check whether ANY available text is about the same subject/topic as the claim at all. If yes (even without confirming the specific detail), the status must be "unclear", never "unsupported". Only use "unsupported" when the topic itself is entirely absent from every source.
-- Only mark "supported" or "fabricated" when you can point to specific text that directly confirms or contradicts the claim. Default to "unclear" over-guessing, and default to "unclear" rather than "supported" when a source's title matches the claim's subject but its summary text does not contain the specific detail being claimed.
+- For each claim, classify status as one of: "supported", "fabricated", or "unverifiable".
 - matchedSource should be the title of the best-matching retrieved source, or exactly "${FULL_DOCUMENT_SOURCE_LABEL}" when the supporting text comes from the analyzed document's own full-text excerpt, or null if none.
 - reasoning must be one sentence explaining the classification, and must reference the SPECIFIC TEXT that supports the classification — not a source's title or general topic alone. When the evidence comes from the document, note that it comes from a different part of the paper than the claim's own sourceQuote. If you cannot quote or closely paraphrase supporting text, the status cannot be "supported."
-- evidenceQuote is REQUIRED whenever status is 'supported' or 'fabricated'. It must be a short (under 40 words) VERBATIM excerpt copied exactly from the matched source's text — not a paraphrase, not from the claim's own sourceQuote. If you cannot produce a verbatim excerpt from the matched source's text, the status must be 'unclear' or 'unsupported', not 'supported'. For 'unclear' or 'unsupported' status, evidenceQuote should be an empty string.
 - confidence is a number from 0 to 1 reflecting how certain you are in the classification itself.
 - Do not fabricate sources. Only reference text given to you.
 - confirmedByMultipleSources marks sources independently indexed by more than one literature database (e.g. arXiv, Semantic Scholar, OpenAlex). Treat it as a credibility signal, but it never substitutes for checking whether that source's actual text states the specific claim being verified.
 
 Output schema:
-{"results": [{"claimId": "string", "status": "supported|unsupported|fabricated|unclear", "matchedSource": "string|null", "evidenceQuote": "string", "reasoning": "string", "confidence": number}]}`;
+{"results": [{"claimId": "string", "status": "supported|fabricated|unverifiable", "matchedSource": "string|null", "evidenceQuote": "string", "reasoning": "string", "confidence": number}]}`;
 
-// Safety cap on the verifier LLM call. Observed latency was 21.7s (measured
+// Safety cap on the falsifier LLM call. Observed latency was 21.7s (measured
 // 2026-08), and the full-document self-verification feature made the prompt
 // ~4x larger, so 60s (matching the extractor's outer cap) gives ~1.5x headroom
 // while still failing fast on a genuinely hung request. With the runtime
@@ -51,14 +71,14 @@ Output schema:
 // 45s outer cap, which would have killed the fallback almost immediately. A
 // timeout here rejects the callRuntime promise, which the existing catch below
 // routes through the same parse-failure fallback as a malformed response (all
-// claims -> "unclear").
-const VERIFIER_CALL_TIMEOUT_MS = 60_000;
+// claims -> "unverifiable").
+const FALSIFIER_CALL_TIMEOUT_MS = 60_000;
 
-const UNCLEAR_FALLBACK = {
-  status: "unclear" as const,
+const UNVERIFIABLE_FALLBACK = {
+  status: "unverifiable" as const,
   matchedSource: null,
   evidenceQuote: "",
-  reasoning: "Verification failed — model output could not be parsed",
+  reasoning: "Falsification failed — model output could not be parsed",
   confidence: 0,
 };
 
@@ -77,10 +97,20 @@ const DOC_OPENING_CHARS = 2000; // always keep the document opening (title + abs
 // origin would leave the origin sentence visible to the model.
 const EXTRACTOR_TEXT_WINDOW = 12000;
 
-/** Normalizes text for deterministic quote-grounding: lowercase, punctuation stripped, whitespace collapsed. */
+/**
+ * Normalizes text for deterministic quote-grounding: lowercase, punctuation
+ * stripped, whitespace collapsed. A hyphen is treated as a WORD SEPARATOR
+ * (space), not dropped: PDF extraction splits hyphenated compounds across line
+ * ends ("English-\nto-German"), which otherwise would normalize to
+ * "english togerman" while the model's clean "English-to-German" normalizes to
+ * "englishtogerman" — a genuine verbatim quote would fail grounding, and the
+ * claim's origin point would not be located for structural exclusion. Treating
+ * the hyphen as a space makes both spellings normalize identically.
+ */
 export function normalizeForGrounding(text: string): string {
   return text
     .toLowerCase()
+    .replace(/-/g, " ")
     .replace(/[^\p{L}\p{N}\s]/gu, "")
     .replace(/\s+/g, " ")
     .trim();
@@ -105,7 +135,9 @@ function normalizeWithOffsets(text: string): { normalized: string; offsets: numb
       normalized += lower;
       offsets.push(i);
       prevSpace = false;
-    } else if (/\s/u.test(lower)) {
+    } else if (/\s/u.test(lower) || lower === "-") {
+      // A hyphen is a word separator (see normalizeForGrounding) — it emits a
+      // space like any other whitespace, so offsets stay aligned.
       if (!prevSpace && normalized.length > 0) {
         normalized += " ";
         offsets.push(i);
@@ -392,10 +424,11 @@ function canonicalizeMatchedSource(raw: unknown): string | null {
  * is missing/empty, or when it is not present (normalized) as a contiguous
  * substring of the matched source's text. The model's self-report is NOT
  * trusted, and there is no vacuous pass: every "supported"/"fabricated" claim
- * must carry a non-empty, mechanically verified verbatim quote or be downgraded.
- * The check is identical for external abstracts and for the document source —
- * for the latter, the source text is the claim's own excerpt (which has its
- * origin point excluded), so quoting the origin back to itself can never ground.
+ * must carry a non-empty, mechanically verified verbatim quote or be downgraded
+ * to "unverifiable". The check is identical for external abstracts and for the
+ * document source — for the latter, the source text is the claim's own excerpt
+ * (which has its origin point excluded), so quoting the origin back to itself
+ * can never ground.
  */
 function isReasonablyGrounded(evidenceQuote: string, matchedSourceText: string | null): boolean {
   if (!matchedSourceText) return false;
@@ -407,35 +440,53 @@ function isReasonablyGrounded(evidenceQuote: string, matchedSourceText: string |
   return normalizedText.includes(normalizedQuote);
 }
 
-export async function runVerifier(
+/**
+ * The Falsifier — the adversarial agent that owns the Claim Graph's terminal
+ * transitions. For each claim it tries to find a concrete reason the claim
+ * should not be trusted; only claims it fails to break AND that carry a real,
+ * mechanically verified quote reach "survived".
+ *
+ * `graph` is the shared Claim Graph: every claim here was registered by the
+ * Extractor (status "pending", or "under_challenge" on a Cross-Examiner
+ * re-check), and this function is the ONLY caller of
+ * ClaimGraph.resolveFalsifierVerdict — the only code path that moves a claim to
+ * a terminal status.
+ */
+export async function runFalsifier(
   claims: ExtractedClaim[],
   sources: RetrievedSource[],
   onEvent: (e: AgentEvent) => void,
-  fullDocumentText?: string
+  graph: ClaimGraph,
+  fullDocumentText?: string,
+  recheck = false
 ): Promise<VerifiedClaim[]> {
-  // Single consistent cheap model tier across every agent — no premium mode.
-  const model = "deepseek/deepseek-chat";
-
   // The uploaded document's own full text (before the extractor's 12000-char
   // truncation) is an additional, always-available evidence source. Per-claim
   // excerpts structurally exclude each claim's own origin point.
   const hasFullDocument = Boolean(fullDocumentText && fullDocumentText.trim().length > 0);
+
+  // Free-tier-only inference: plain runs use the stronger-reasoning falsifier
+  // model; full-document runs (whose prompt is ~4x larger) use the long-context
+  // model. No premium mode — cost is $0.00 either way.
+  const model = hasFullDocument ? FREE_MODELS.fullText : FREE_MODELS.falsifier;
   const docExcerpts = hasFullDocument ? buildClaimExcerpts(fullDocumentText!, claims) : [];
 
   onEvent({
-    agent: "verifier",
+    agent: "falsifier",
     status: "started",
-    message: hasFullDocument
-      ? `Verifying ${claims.length} claim(s) against ${sources.length} external source(s) and ${docExcerpts.length} full-document excerpt(s) with origin points excluded (${model})...`
-      : `Verifying ${claims.length} claim(s) against ${sources.length} source(s) (${model})...`,
+    message: recheck
+      ? `Re-falsifying ${claims.length} challenged claim(s) after a cross-examiner contradiction (${model})...`
+      : hasFullDocument
+        ? `Attempting to falsify ${claims.length} claim(s) against ${sources.length} external source(s) and ${docExcerpts.length} full-document excerpt(s) with origin points excluded (${model})...`
+        : `Attempting to falsify ${claims.length} claim(s) against ${sources.length} source(s) (${model})...`,
     timestamp: Date.now(),
   });
 
   if (claims.length === 0) {
     onEvent({
-      agent: "verifier",
+      agent: "falsifier",
       status: "done",
-      message: "No claims to verify.",
+      message: "No claims to falsify.",
       timestamp: Date.now(),
     });
     return [];
@@ -474,21 +525,21 @@ export async function runVerifier(
       callRuntime({
         model,
         messages: [
-          { role: "system", content: VERIFIER_SYSTEM_PROMPT },
+          { role: "system", content: FALSIFIER_SYSTEM_PROMPT },
           { role: "user", content: userMessage },
         ],
         maxTokens: 1500,
-        // promptCacheKey: "verifier-v4",
+        // promptCacheKey: "falsifier-v5",
         responseFormat: "json_object",
       }),
-      VERIFIER_CALL_TIMEOUT_MS,
-      "Verifier API call"
+      FALSIFIER_CALL_TIMEOUT_MS,
+      "Falsifier API call"
     );
 
     onEvent({
-      agent: "verifier",
+      agent: "falsifier",
       status: "streaming",
-      message: "Verification results received from Runtime API.",
+      message: "Falsification results received from Runtime API.",
       cacheTier: runtimeRes.cacheTier,
       benchmarkCost: runtimeRes.benchmarkCost,
       customerCharge: runtimeRes.customerCharge,
@@ -505,18 +556,18 @@ export async function runVerifier(
     } catch (parseError: any) {
       parseFailed = true;
       onEvent({
-        agent: "verifier",
+        agent: "falsifier",
         status: "error",
-        message: `Failed to parse verification JSON: ${parseError?.message || parseError}`,
+        message: `Failed to parse falsification JSON: ${parseError?.message || parseError}`,
         timestamp: Date.now(),
       });
     }
   } catch (err: any) {
     parseFailed = true;
     onEvent({
-      agent: "verifier",
+      agent: "falsifier",
       status: "error",
-      message: `Verifier API call failed: ${err?.message || err}`,
+      message: `Falsifier API call failed: ${err?.message || err}`,
       timestamp: Date.now(),
     });
   }
@@ -529,25 +580,30 @@ export async function runVerifier(
     }
   }
 
-  // Merge results back onto claims
+  // Merge results back onto claims. The model's "unsupported"/"unclear" labels
+  // (if it emits them) and any invalid label collapse into "unverifiable" — the
+  // Falsifier's only non-verdict answer.
   const verified: VerifiedClaim[] = claims.map((claim) => {
     const match = parseFailed ? null : resultMap.get(claim.id);
 
     if (!match) {
       return {
         ...claim,
-        ...UNCLEAR_FALLBACK,
+        ...UNVERIFIABLE_FALLBACK,
       };
     }
 
+    const rawStatus = match.status;
+    const status = rawStatus === "supported" || rawStatus === "fabricated"
+      ? rawStatus
+      : "unverifiable";
+
     return {
       ...claim,
-      status: (["supported", "unsupported", "fabricated", "unclear"].includes(match.status)
-        ? match.status
-        : "unclear") as VerifiedClaim["status"],
+      status,
       matchedSource: canonicalizeMatchedSource(match.matchedSource),
       evidenceQuote: typeof match.evidenceQuote === "string" ? match.evidenceQuote : "",
-      reasoning: typeof match.reasoning === "string" ? match.reasoning : UNCLEAR_FALLBACK.reasoning,
+      reasoning: typeof match.reasoning === "string" ? match.reasoning : UNVERIFIABLE_FALLBACK.reasoning,
       confidence: typeof match.confidence === "number" ? Math.min(1, Math.max(0, match.confidence)) : 0,
     };
   });
@@ -600,16 +656,30 @@ export async function runVerifier(
         return { ...vc, matchedSource: FULL_DOCUMENT_SOURCE_LABEL };
       }
     }
+
+    // The model sometimes quotes an EXTERNAL abstract — most often the same
+    // paper's own abstract retrieved via the literature APIs, which is clean
+    // text without the PDF's line-break hyphenation — but attributes the
+    // evidence to the document (or to the wrong external title). Mirror the
+    // correction above: relabel to whichever external source's text actually
+    // contains the quote verbatim. Fully deterministic — the label only
+    // changes when the quote is mechanically verified in the new source.
+    for (const [title, text] of sourceTextByTitle) {
+      if (isReasonablyGrounded(vc.evidenceQuote, text)) {
+        return { ...vc, matchedSource: title };
+      }
+    }
     return vc;
   };
 
   const corrected = verified.map(correctSourceAttribution);
 
   // ── Deterministic grounding check ────────────────────────────────────────
-  // The model's self-reported evidenceQuote is not trusted: any "supported"/"fabricated"
-  // claim whose evidenceQuote is missing/empty or not actually present (normalized)
-  // as a contiguous substring of the matched source's text is downgraded to
-  // "unclear". Every such claim is checked — there is no vacuous pass path. For
+  // The model's self-reported evidenceQuote is not trusted: any
+  // "supported"/"fabricated" claim whose evidenceQuote is missing/empty or not
+  // actually present (normalized) as a contiguous substring of the matched
+  // source's text is downgraded to "unverifiable" — regardless of the model's
+  // reasoning. Every such claim is checked — there is no vacuous pass path. For
   // document-labeled claims the matched source's text is the claim's own excerpt
   // (origin point excluded), so a self-matching origin quote can never ground.
   const downgradeSuffix = " [downgraded: quoted evidence not found verbatim in source text]";
@@ -632,10 +702,10 @@ export async function runVerifier(
         downgradedCount++;
         return {
           ...vc,
-          status: "unclear",
+          status: "unverifiable",
           // The full-document label claims a verified cross-reference; after a
           // downgrade that claim is false, so clear it rather than show a
-          // misleading in-paper source on an unclear verdict.
+          // misleading in-paper source on an unverifiable verdict.
           matchedSource:
             vc.matchedSource === FULL_DOCUMENT_SOURCE_LABEL ? null : vc.matchedSource,
           reasoning: vc.reasoning + downgradeSuffix,
@@ -645,15 +715,15 @@ export async function runVerifier(
       return vc;
     } catch (err: any) {
       // Defensive: never let the grounding check crash the pipeline.
-      console.warn(`[verifier] grounding check skipped for claim ${vc.id}:`, err?.message || err);
+      console.warn(`[falsifier] grounding check skipped for claim ${vc.id}:`, err?.message || err);
       return vc;
     }
   });
 
   onEvent({
-    agent: "verifier",
+    agent: "falsifier",
     status: "streaming",
-    message: `Grounding check downgraded ${downgradedCount} of ${checkedCount} claims (quoted evidence not verified against source text)`,
+    message: `Grounding check downgraded ${downgradedCount} of ${checkedCount} claims to unverifiable (quoted evidence not verified against source text)`,
     timestamp: Date.now(),
   });
 
@@ -679,23 +749,64 @@ export async function runVerifier(
     return dist === undefined ? vc : { ...vc, documentEvidenceDistance: dist };
   });
 
-  // Count per status for done event
-  const counts: Record<string, number> = { supported: 0, unsupported: 0, fabricated: 0, unclear: 0 };
-  for (const vc of withDistance) {
-    counts[vc.status] = (counts[vc.status] || 0) + 1;
+  // ── Claim Graph: apply the hard status update ─────────────────────────────
+  // The Falsifier is the only agent that may move a claim to a terminal status;
+  // ClaimGraph.resolveFalsifierVerdict is the only writer. groundingCheckPassed
+  // is true only when a "supported"/"fabricated" verdict carried a verbatim,
+  // mechanically verified quote (so "supported" survives, "fabricated" is
+  // falsified); everything else — including quotes that failed grounding —
+  // lands on "unverifiable".
+  const withGraphState: VerifiedClaim[] = withDistance.map((vc) => {
+    const groundingCheckPassed = vc.status === "supported" || vc.status === "fabricated";
+    const originPointExcluded =
+      hasFullDocument && (excerptMetaById.get(vc.id)?.exclusionSpan != null);
+
+    const node = graph.resolveFalsifierVerdict({
+      id: vc.id,
+      verdict: vc.status,
+      groundingCheckPassed,
+      originPointExcluded,
+      evidenceQuote: vc.evidenceQuote,
+      reason: recheck
+        ? `Re-challenged by the Cross-Examiner — ${vc.reasoning}`
+        : vc.reasoning,
+    });
+
+    return {
+      ...vc,
+      graphStatus: node.status,
+      groundingCheckPassed: node.groundingCheckPassed,
+      originPointExcluded: node.originPointExcluded,
+      challenges: node.challenges,
+      finalVerdict: node.finalVerdict,
+    };
+  });
+
+  // Count per graph status for the done event
+  const counts: Record<string, number> = {
+    survived: 0,
+    falsified: 0,
+    unverifiable: 0,
+  };
+  for (const vc of withGraphState) {
+    const key = vc.graphStatus ?? "unverifiable";
+    counts[key] = (counts[key] || 0) + 1;
   }
 
-  const summary = Object.entries(counts)
-    .filter(([, n]) => n > 0)
-    .map(([status, n]) => `${n} ${status}`)
-    .join(", ");
+  const summary =
+    Object.entries(counts)
+      .filter(([, n]) => n > 0)
+      .map(([status, n]) => `${n} ${status}`)
+      .join(", ");
 
   onEvent({
-    agent: "verifier",
+    agent: "falsifier",
     status: "done",
-    message: `Verifier completed: ${summary}.`,
+    message: recheck
+      ? `Re-check complete: ${summary} after the challenge.`
+      : `Falsifier filed: ${summary}. Only survived claims may ground the consensus.`,
     timestamp: Date.now(),
   });
 
-  return withDistance;
+  return withGraphState;
 }

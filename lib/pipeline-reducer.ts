@@ -1,4 +1,4 @@
-import type { AgentRole, AnalysisReport } from "./agents/types";
+import type { AgentRole, AnalysisReport, ClaimGraphEntry } from "./agents/types";
 
 /**
  * Client-side pipeline state — a pure reducer with no server imports.
@@ -13,14 +13,14 @@ export type NodeState = "pending" | "active" | "done" | "error";
 export const AGENTS: AgentRole[] = [
   "retriever",
   "extractor",
-  "verifier",
+  "falsifier",
   "synthesizer",
 ];
 
 export const AGENT_LABELS: Record<AgentRole, string> = {
   retriever: "Retriever",
   extractor: "Extractor",
-  verifier: "Verifier",
+  falsifier: "Falsifier",
   synthesizer: "Synthesizer",
 };
 
@@ -34,6 +34,8 @@ export interface StreamEvent {
   customerCharge?: number | null;
   timestamp?: number;
   report?: AnalysisReport;
+  /** Present on claim-graph events — a live snapshot of the Claim Graph. */
+  claims?: ClaimGraphEntry[];
 }
 
 export interface LogEntry {
@@ -55,6 +57,12 @@ export interface PipelineState {
   customerCharge: number;
   report: AnalysisReport | null;
   error: string | null;
+  /**
+   * Live Claim Graph snapshot (id → status) for the status badges. Updated by
+   * claim-graph SSE events while the run is in flight; populated from the
+   * report's claims when a completed/restored report arrives.
+   */
+  claimGraph: ClaimGraphEntry[] | null;
 }
 
 export type PipelineAction =
@@ -66,7 +74,7 @@ export type PipelineAction =
 const INITIAL_NODES: Record<AgentRole, NodeState> = {
   retriever: "pending",
   extractor: "pending",
-  verifier: "pending",
+  falsifier: "pending",
   synthesizer: "pending",
 };
 
@@ -78,6 +86,7 @@ export const INITIAL_STATE: PipelineState = {
   customerCharge: 0,
   report: null,
   error: null,
+  claimGraph: null,
 };
 
 const LOG_LIMIT = 150;
@@ -102,6 +111,17 @@ function toLogEntry(event: StreamEvent): LogEntry {
     customerCharge: event.customerCharge ?? null,
     timestamp: event.timestamp ?? Date.now(),
   };
+}
+
+/** Builds the Claim Graph snapshot from a completed report's claims. */
+function claimGraphFromReport(report: AnalysisReport): ClaimGraphEntry[] {
+  return report.claims.map((c) => ({
+    id: c.id,
+    text: c.text,
+    citationLabel: c.citedAs,
+    graphStatus: c.graphStatus ?? "unverifiable",
+    finalVerdict: c.finalVerdict,
+  }));
 }
 
 export function pipelineReducer(
@@ -142,6 +162,7 @@ export function pipelineReducer(
             report: event.report,
             nodes,
             log,
+            claimGraph: claimGraphFromReport(event.report),
           };
         }
         if (event.status === "error") {
@@ -153,6 +174,11 @@ export function pipelineReducer(
           };
         }
         return { ...state, log };
+      }
+
+      // ── Claim Graph events update the live status badges ──────────────
+      if (event.agent === "claim-graph" && Array.isArray(event.claims)) {
+        return { ...state, log, claimGraph: event.claims };
       }
 
       // ── Per-agent events drive a node and (if streaming) the meter ────
